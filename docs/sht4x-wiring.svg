@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title description">
+  <title id="title">SHT4x to ESP32-C3 SuperMini wiring</title>
+  <desc id="description">SHT4x on the left and ESP32 on the right. Four straight wires connect facing terminals: VCC to 3V3, GND to GND, SDA to GPIO4, and SCL to GPIO5. This is a connection schematic, not physical pin placement.</desc>
+  <style>
+    text { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; fill: #203042; }
+    .heading { font-size: 29px; font-weight: 750; }
+    .subtitle { font-size: 18px; fill: #53647a; }
+    .module { fill: white; stroke: #94a3b8; stroke-width: 2; }
+    .name { font-size: 23px; font-weight: 700; }
+    .pin { font-size: 21px; font-weight: 700; }
+    .wire { fill: none; stroke-width: 5; }
+    .note { font-size: 17px; fill: #53647a; }
+  </style>
+  <rect width="1200" height="650" rx="22" fill="#f5f7fb"/>
+  <text x="48" y="64" class="heading">SHT4x ↔ ESP32-C3 SuperMini wiring</text>
+  <text x="48" y="102" class="subtitle">SDA on GPIO4 · SCL on GPIO5 · 3.3 V power and logic</text>
+
+  <rect x="60" y="157" width="360" height="350" rx="22" class="module"/>
+  <text x="240" y="201" text-anchor="middle" class="name">SHT4x breakout</text>
+  <text x="240" y="232" text-anchor="middle" class="subtitle">SHT40 / SHT41 / SHT45</text>
+
+  <rect x="780" y="157" width="360" height="350" rx="22" class="module"/>
+  <text x="960" y="201" text-anchor="middle" class="name">ESP32-C3 SuperMini</text>
+  <text x="960" y="232" text-anchor="middle" class="subtitle">Sensor node</text>
+
+  <text x="395" y="293" text-anchor="end" class="pin">VCC</text>
+  <text x="805" y="293" class="pin">3V3</text>
+  <path d="M420 285 H780" class="wire" stroke="#d64545"/>
+  <g fill="#d64545"><circle cx="420" cy="285" r="6"/><circle cx="780" cy="285" r="6"/></g>
+
+  <text x="395" y="348" text-anchor="end" class="pin">GND</text>
+  <text x="805" y="348" class="pin">GND</text>
+  <path d="M420 340 H780" class="wire" stroke="#2879df"/>
+  <g fill="#2879df"><circle cx="420" cy="340" r="6"/><circle cx="780" cy="340" r="6"/></g>
+
+  <text x="395" y="403" text-anchor="end" class="pin">SDA</text>
+  <text x="805" y="403" class="pin">GPIO4</text>
+  <path d="M420 395 H780" class="wire" stroke="#149b55"/>
+  <g fill="#149b55"><circle cx="420" cy="395" r="6"/><circle cx="780" cy="395" r="6"/></g>
+
+  <text x="395" y="458" text-anchor="end" class="pin">SCL</text>
+  <text x="805" y="458" class="pin">GPIO5</text>
+  <path d="M420 450 H780" class="wire" stroke="#9955b5"/>
+  <g fill="#9955b5"><circle cx="420" cy="450" r="6"/><circle cx="780" cy="450" r="6"/></g>
+
+  <text x="60" y="554" class="note">Connection schematic — terminal order does not represent physical pin placement.</text>
+  <text x="60" y="585" class="note">Match the printed pin labels on your boards. Power the sensor from 3V3.</text>
+</svg>

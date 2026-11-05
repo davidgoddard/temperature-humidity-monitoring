@@ -17,6 +17,60 @@ uint32_t highSeq[256] = {0};
 const char *LOGFILE = "/measurements.csv";
 String datasetId;
 
+// Fixed RAM budget: sparse file offsets plus a small pagination continuation cache.
+struct HistoryPoint { uint32_t id, offset; };
+HistoryPoint historyIndex[128], continuations[8];
+size_t indexCount=0, continuationSlot=0;
+uint32_t indexedRecords=0, indexStride=1;
+struct LatestReading { uint32_t id, seq, ts; float temp, rh; };
+LatestReading latestReadings[256] = {};
+
+// Buffered, bounded reads avoid one filesystem operation per character and
+// Stream's timeout on an incomplete final line. Oversized/torn lines are skipped.
+class LogReader {
+  File &file;
+  uint8_t buffer[512];
+  size_t used=0, availableBytes=0;
+  uint32_t offset;
+public:
+  LogReader(File &f):file(f),offset(f.position()){}
+  uint32_t position() const { return offset; }
+  bool line(char *out, size_t capacity) {
+    size_t length=0; bool overflow=false;
+    for (;;) {
+      if(used==availableBytes){availableBytes=file.read(buffer,sizeof(buffer));used=0;if(!availableBytes)return false;}
+      char c=buffer[used++];offset++;
+      if(c=='\n'){out[overflow?0:length]=0;return true;}
+      if(length+1<capacity)out[length++]=c;else overflow=true;
+    }
+  }
+};
+bool parseRecord(const char *line, unsigned long &id, unsigned &node,
+                 unsigned long &seq, unsigned long &ts, float &t, float &h) {
+  return sscanf(line,"%lu,%u,%lu,%lu,%f,%f",&id,&node,&seq,&ts,&t,&h)==6 &&
+    id>0 && node>0 && node<256 && isfinite(t) && isfinite(h);
+}
+void indexRecord(uint32_t id, uint32_t offset) {
+  if(indexedRecords % indexStride == 0){
+    if(indexCount==128){
+      for(size_t i=0;i<64;i++)historyIndex[i]=historyIndex[i*2];
+      indexCount=64;indexStride*=2;
+    }
+    if(indexedRecords % indexStride == 0)historyIndex[indexCount++]={id,offset};
+  }
+  indexedRecords++;
+}
+void rebuildHistoryIndex() {
+  indexCount=0;indexedRecords=0;indexStride=1;
+  memset(continuations,0,sizeof(continuations));
+  File f=LittleFS.open(LOGFILE,"r");if(!f)return;
+  LogReader reader(f);char line[128];
+  for(;;){uint32_t offset=reader.position();if(!reader.line(line,sizeof(line)))break;
+    unsigned long id,seq,ts;unsigned node;float t,h;
+    if(parseRecord(line,id,node,seq,ts,t,h))indexRecord(id,offset);
+  }
+}
+
 String newDatasetId() {
   char s[25];
   snprintf(s, sizeof(s), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
@@ -42,6 +96,8 @@ bool resetReadings() {
   // A failed metadata reset must not be reported as success.
   if (!prefs.clear()) return false;
   memset(highSeq, 0, sizeof(highSeq));
+  memset(latestReadings,0,sizeof(latestReadings));
+  indexCount=0;indexedRecords=0;indexStride=1;memset(continuations,0,sizeof(continuations));
   nextId = 1;
   datasetId = newDatasetId();
   return prefs.putString("dataset", datasetId) == datasetId.length();
@@ -55,12 +111,17 @@ void options() { cors(); server.send(204); }
 
 void recoverLog() {
   File f = LittleFS.open(LOGFILE, "r");
-  if (f) while (f.available()) {
-    String line = f.readStringUntil('\n');
-    unsigned long id, seq, ts; unsigned node; float t, h;
-    if (sscanf(line.c_str(), "%lu,%u,%lu,%lu,%f,%f", &id, &node, &seq, &ts, &t, &h) == 6 && node < 256) {
-      if (id >= nextId) nextId = id + 1;
-      if (seq > highSeq[node]) highSeq[node] = seq;
+  if(f){
+    LogReader reader(f);char line[128];
+    for(;;){
+      uint32_t offset=reader.position();if(!reader.line(line,sizeof(line)))break;
+      unsigned long id,seq,ts;unsigned node;float t,h;
+      if(parseRecord(line,id,node,seq,ts,t,h)){
+        indexRecord(id,offset);
+        if(id>=nextId)nextId=id+1;
+        if(seq>highSeq[node])highSeq[node]=seq;
+        if(id>latestReadings[node].id)latestReadings[node]={(uint32_t)id,(uint32_t)seq,(uint32_t)ts,t,h};
+      }
     }
   }
   if (f) f.close();
@@ -96,7 +157,7 @@ void setup() {
 
   server.on("/api/meta", HTTP_GET, []() {
     cors();
-    server.send(200, "application/json", "{\"dataset\":\"" + datasetId + "\"}");
+    server.send(200, "application/json", "{\"dataset\":\"" + datasetId + "\",\"archive_protocol\":2,\"latest_id\":" + String(nextId-1) + ",\"retained_after\":" + String(indexCount?historyIndex[0].id-1:nextId-1) + "}");
   });
 
   // Destructive operation. Require the exact confirmation phrase in body.
@@ -139,11 +200,14 @@ void setup() {
       if(nodeExpected!=(int)node){ok=false;break;}
       if (seq>highSeq[node]) {
         String record=String(nextId)+","+String(node)+","+String(seq)+","+String(ts)+","+String(t,2)+","+String(h,2)+"\n";
+        uint32_t recordOffset=f.position();
         if(f.print(record)!=record.length()){ok=false;break;}
         f.flush();
         // Monotonic IDs and dedup are persisted before acknowledging.
         char key[12];snprintf(key,sizeof(key),"seq%d",node);
         if(prefs.putUInt(key,seq)!=4 || prefs.putUInt("nextid",nextId+1)!=4){ok=false;break;}
+        indexRecord(nextId,recordOffset);
+        latestReadings[node]={nextId,(uint32_t)seq,(uint32_t)ts,t,h};
         highSeq[node]=seq; nextId++;
       }
       ack=seq;
@@ -159,28 +223,49 @@ void setup() {
     cors();
     uint32_t after=(uint32_t)strtoul(server.arg("after").c_str(),nullptr,10);
     File f=LittleFS.open(LOGFILE,"r");
-    String result="{\"latest_id\":"+String(nextId-1)+",\"rows\":[";
+    String result="{\"dataset\":\""+datasetId+"\",\"latest_id\":"+String(nextId-1)+",\"rows\":[";
+    result.reserve(12500);
     int count=0;
-    if(f) {
-      while(f.available()){
-        String line=f.readStringUntil('\n');
-        uint32_t id=(uint32_t)strtoul(line.c_str(),nullptr,10);
-        if(id<=after)continue;
-        line.trim(); if(!line.length())continue;
+    if(f && after<nextId-1) {
+      uint32_t offset=0;
+      for(size_t i=0;i<indexCount;i++)if(historyIndex[i].id<=after)offset=historyIndex[i].offset;
+      for(const auto &point:continuations)if(point.id==after && point.offset>offset)offset=point.offset;
+      if(!f.seek(offset)){f.close();respond(500,"history seek failed");return;}
+      LogReader reader(f);char line[128];uint32_t last=after;
+      while(reader.line(line,sizeof(line))){
+        unsigned long id,seq,ts;unsigned node;float t,h;
+        if(!parseRecord(line,id,node,seq,ts,t,h)||id<=after)continue;
         if(count)result+=",";
-        result+="[";line.replace(",",",");result+=line+"]";
+        result+="[";result+=line;result+="]";last=id;
         if(++count>=100 || result.length()>12000)break;
       }
+      continuations[continuationSlot++ % 8]={last,reader.position()};
       f.close();
     }
     result+="]}";
     server.send(200,"application/json",result);
   });
 
-  // Called ONLY after successful archive-file write by the dashboard.
+  // Cached at boot and on uploads; bounded by the protocol's 255 sensor IDs.
+  server.on("/api/latest",HTTP_GET,[](){
+    cors();server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200,"application/json","");server.sendContent("{\"dataset\":\""+datasetId+"\",\"rows\":[");
+    bool comma=false;
+    for(unsigned node=1;node<256;node++){
+      const auto &r=latestReadings[node];if(!r.id)continue;
+      char row[256];
+      snprintf(row,sizeof(row),"%s[%lu,%u,%lu,%lu,%.2f,%.2f]",comma?",":"",
+        (unsigned long)r.id,node,(unsigned long)r.seq,(unsigned long)r.ts,r.temp,r.rh);
+      server.sendContent(row);comma=true;
+    }
+    server.sendContent("]}");server.sendContent("");
+  });
+
+  // Called ONLY after a verified archive-file write. Dataset guards against reset races.
   // Deletes archived prefix by rewriting data > upto.
   server.on("/api/archive/ack",HTTP_POST,[](){
     cors();
+    if(server.arg("dataset") != datasetId) {respond(409,"dataset changed or missing; fetch again");return;}
     uint32_t upto=(uint32_t)strtoul(server.arg("plain").c_str(),nullptr,10);
     if(!upto || upto>=nextId) {respond(400,"invalid archive id");return;}
     File in=LittleFS.open(LOGFILE,"r");
@@ -198,6 +283,8 @@ void setup() {
     if (!LittleFS.rename(LOGFILE,"/compact.bak")) { respond(500,"backup rename failed"); return; }
     if (!LittleFS.rename("/compact.tmp",LOGFILE)) { LittleFS.rename("/compact.bak",LOGFILE); respond(500,"compaction rename failed"); return; }
     LittleFS.remove("/compact.bak");
+    rebuildHistoryIndex();
+    for(unsigned node=1;node<256;node++)if(latestReadings[node].id<=upto)latestReadings[node]={};
     respond(200,"OK");
   });
   server.on("/api/meta",HTTP_OPTIONS,options);
@@ -205,6 +292,7 @@ void setup() {
   server.on("/api/time",HTTP_OPTIONS,options);
   server.on("/api/readings",HTTP_OPTIONS,options);
   server.on("/api/history",HTTP_OPTIONS,options);
+  server.on("/api/latest",HTTP_OPTIONS,options);
   server.on("/api/archive/ack",HTTP_OPTIONS,options);
   server.on("/",HTTP_GET,[](){server.send_P(200,"text/html; charset=utf-8",DASHBOARD_PAGE);});
   server.on("/dashboard.html",HTTP_GET,[](){server.send_P(200,"text/html; charset=utf-8",DASHBOARD_PAGE);});
