@@ -16,6 +16,7 @@ uint32_t nextId = 1;
 uint32_t highSeq[256] = {0};
 const char *LOGFILE = "/measurements.csv";
 String datasetId;
+const size_t MAX_LABEL_BYTES = 48;
 
 // Fixed RAM budget: sparse file offsets plus a small pagination continuation cache.
 struct HistoryPoint { uint32_t id, offset; };
@@ -85,6 +86,25 @@ void loadDatasetId() {
   }
 }
 
+void labelKey(unsigned node, char *key, size_t capacity) {
+  snprintf(key, capacity, "label%u", node);
+}
+
+String jsonString(const String &value) {
+  String escaped = "\"";
+  escaped.reserve(value.length() + 8);
+  for (size_t i=0; i<value.length(); i++) {
+    uint8_t c=value[i];
+    if(c=='\"' || c=='\\'){escaped+='\\';escaped+=(char)c;}
+    else if(c=='\n')escaped+="\\n";
+    else if(c=='\r')escaped+="\\r";
+    else if(c=='\t')escaped+="\\t";
+    else escaped+=(char)c;
+  }
+  escaped+='\"';
+  return escaped;
+}
+
 // Reset sensor readings only; firmware, shared Wi-Fi configuration and
 // dashboard remain. Do not call LittleFS.format().
 bool resetReadings() {
@@ -93,8 +113,12 @@ bool resetReadings() {
   if (LittleFS.exists("/compact.tmp") && !LittleFS.remove("/compact.tmp")) return false;
   if (LittleFS.exists("/compact.bak") && !LittleFS.remove("/compact.bak")) return false;
 
-  // A failed metadata reset must not be reported as success.
-  if (!prefs.clear()) return false;
+  // Labels are configuration, not readings, and deliberately survive reset.
+  for (int n=1; n<256; n++) {
+    char key[12]; snprintf(key,sizeof(key),"seq%d",n);
+    if (prefs.isKey(key) && !prefs.remove(key)) return false;
+  }
+  if (prefs.isKey("nextid") && !prefs.remove("nextid")) return false;
   memset(highSeq, 0, sizeof(highSeq));
   memset(latestReadings,0,sizeof(latestReadings));
   indexCount=0;indexedRecords=0;indexStride=1;memset(continuations,0,sizeof(continuations));
@@ -179,6 +203,32 @@ void setup() {
     cors();
     if (!epochValid()) { respond(503,"clock not synchronised"); return; }
     server.send(200,"text/plain",String((uint32_t)time(nullptr)));
+  });
+
+  // Labels live in NVS on the base and are independent of retained readings.
+  server.on("/api/labels", HTTP_GET, []() {
+    cors();server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200,"application/json","");server.sendContent("{\"labels\":[");
+    bool comma=false;
+    for(unsigned node=1;node<256;node++){
+      char key[12];labelKey(node,key,sizeof(key));
+      String label=prefs.getString(key,"");if(!label.length())continue;
+      server.sendContent(String(comma?",":"")+"["+String(node)+","+jsonString(label)+"]");comma=true;
+    }
+    server.sendContent("]}");server.sendContent("");
+  });
+
+  server.on("/api/labels", HTTP_POST, []() {
+    cors();
+    char *end=nullptr;unsigned long parsed=strtoul(server.arg("node").c_str(),&end,10);
+    if(!end || *end || parsed<1 || parsed>255){respond(400,"invalid sensor id");return;}
+    String label=server.arg("plain");label.trim();
+    if(label.length()>MAX_LABEL_BYTES){respond(400,"label must be at most 48 bytes");return;}
+    for(size_t i=0;i<label.length();i++)if((uint8_t)label[i]<32 || (uint8_t)label[i]==127){respond(400,"label contains control characters");return;}
+    char key[12];labelKey((unsigned)parsed,key,sizeof(key));
+    bool ok=label.length()?prefs.putString(key,label)==label.length():(!prefs.isKey(key)||prefs.remove(key));
+    if(!ok){respond(500,"label could not be stored");return;}
+    server.send(200,"application/json","{\"ok\":true,\"node\":"+String(parsed)+",\"label\":"+jsonString(label)+"}");
   });
 
   // Sensor POST format: one CSV line per reading: node,seq,unix_seconds,temp,humidity
@@ -293,6 +343,7 @@ void setup() {
   server.on("/api/readings",HTTP_OPTIONS,options);
   server.on("/api/history",HTTP_OPTIONS,options);
   server.on("/api/latest",HTTP_OPTIONS,options);
+  server.on("/api/labels",HTTP_OPTIONS,options);
   server.on("/api/archive/ack",HTTP_OPTIONS,options);
   server.on("/",HTTP_GET,[](){server.send_P(200,"text/html; charset=utf-8",DASHBOARD_PAGE);});
   server.on("/dashboard.html",HTTP_GET,[](){server.send_P(200,"text/html; charset=utf-8",DASHBOARD_PAGE);});

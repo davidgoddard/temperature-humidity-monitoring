@@ -25,12 +25,12 @@ function database(seed=[]){
 }
 const row=id=>({id,node:1,seq:id,ts:1800000000,temp:20,rh:50});
 const wire=r=>[r.id,r.node,r.seq,r.ts,r.temp,r.rh];
-function harness({storage=database(),local=new Map(),history=[],dataset='a',latest=[],onHistory,realDraw=false}={}){
- const elements=new Map();const el=id=>{if(!elements.has(id))elements.set(id,{value:({base:'http://temp.local',period:'6',metric:'temp',overdue:'360'})[id]||'',textContent:'',disabled:false});return elements.get(id);};
+function harness({storage=database(),local=new Map(),history=[],dataset='a',latest=[],labels=[],onHistory,realDraw=false}={}){
+ const elements=new Map();const el=id=>{if(!elements.has(id))elements.set(id,{value:({base:'http://temp.local',period:'6',metric:'temp',overdue:'360'})[id]||'',textContent:'',disabled:false,hidden:false,style:{}});return elements.get(id);};
  const calls=[];let draws=0;
  const ctx=vm.createContext({console,Map,Date,Promise,Error,AbortController,Number,Array,Math,Set,Blob,setTimeout,clearTimeout,setInterval(){},indexedDB:storage,
  localStorage:{getItem:k=>local.get(k)||null,setItem:(k,v)=>local.set(k,String(v)),removeItem:k=>local.delete(k)},document:{getElementById:el},window:{},
- fetch:async url=>{calls.push(url);let body;if(url.endsWith('/api/meta'))body={dataset};else if(url.endsWith('/api/latest'))body={rows:latest.map(wire)};else{const after=+url.split('after=')[1];if(onHistory){const result=await onHistory(after);if(result)return result;}body={rows:history.filter(r=>r.id>after).slice(0,2).map(wire)};}return {ok:true,json:async()=>body};},
+ fetch:async (url,options={})=>{calls.push(url);let body;if(url.endsWith('/api/meta'))body={dataset};else if(url.endsWith('/api/latest'))body={rows:latest.map(wire)};else if(url.endsWith('/api/labels'))body={labels};else if(url.includes('/api/labels?node=')){body={ok:true,node:+url.split('node=')[1],label:String(options.body||'').trim()};}else{const after=+url.split('after=')[1];if(onHistory){const result=await onHistory(after);if(result)return result;}body={rows:history.filter(r=>r.id>after).slice(0,2).map(wire)};}return {ok:true,json:async()=>body,text:async()=>''};},
  });vm.runInContext(source,ctx);ctx.recordDraw=()=>draws++;if(!realDraw)vm.runInContext('draw=()=>recordDraw()',ctx);
  return {ctx,calls,el,local,storage,get draws(){return draws;},run:code=>vm.runInContext(code,ctx),init:()=>vm.runInContext('initialize()',ctx)};
 }
@@ -110,6 +110,42 @@ test('sensor cards isolate chart data and toggle back to all sensors',()=>{
  assert.equal(h.run('selectedSensor'),null);
  assert.match(h.el('legend').innerHTML,/Sensor 1/);
  assert.match(h.el('legend').innerHTML,/Sensor 2/);
+});
+
+test('base-station labels appear safely on cards and chart legend',async()=>{
+ const h=harness({realDraw:true,labels:[[1,'Greenhouse <north>']]});
+ const canvasContext=new Proxy({}, {get:(o,k)=>o[k]??(()=>{})});h.ctx.devicePixelRatio=1;
+ h.el('chart').getBoundingClientRect=()=>({width:800,height:400});h.el('chart').getContext=()=>canvasContext;h.el('period').value='0';
+ h.run('initialized=true;all=[{id:1,node:1,ts:1800000000,temp:20,rh:50}]');await h.run('loadLabels()');
+ assert.match(h.el('cards').innerHTML,/Greenhouse &lt;north&gt;/);assert.doesNotMatch(h.el('cards').innerHTML,/Greenhouse <north>/);
+ assert.match(h.el('legend').innerHTML,/Greenhouse &lt;north&gt;/);assert.match(h.el('labelList').innerHTML,/value="Greenhouse &lt;north&gt;"/);
+});
+
+test('time axis uses quarter-day ticks for long spans and minutes only in final short-view hour',()=>{
+ assert.match(source,/span>=36\*3600/);assert.match(source,/setHours\(tick\.getHours\(\)\+6\)/);
+ assert.match(source,/weekday:'short'/);assert.match(source,/for\(let minute=15;minute<60;minute\+=15\)/);assert.match(source,/span<=90\*60/);
+});
+
+test('one-hour time axis labels every clock-aligned ten minutes',()=>{
+ const h=harness(),labels=[];h.ctx.axisContext={textAlign:'',font:'',strokeStyle:'',fillStyle:'',beginPath(){},moveTo(){},lineTo(){},stroke(){},fillText(value){labels.push(value);}};
+ h.run("drawTimeAxis(axisContext,x=>x,new Date(2027,0,1,9,0).getTime()/1000,new Date(2027,0,1,10,0).getTime()/1000,0,100,200)");
+ assert.equal(labels.length,7);assert.ok(labels.some(label=>/:10/.test(label)));assert.ok(labels.some(label=>/:50/.test(label)));
+});
+
+test('Y axis uses readable zero-anchored multiples',()=>{
+ assert.deepEqual({...harness().run("niceScale(-1.7,19.6,'temp')")},{low:-5,high:20,step:5,decimals:0});
+ assert.deepEqual({...harness().run("niceScale(-1,1.5,'temp')")},{low:-1,high:1.5,step:.5,decimals:1});
+ const humidity={...harness().run("niceScale(47.2,50.1,'rh')")};assert.equal(humidity.step,1);assert.equal(humidity.decimals,0);assert.equal(humidity.low%1,0);assert.equal(humidity.high%1,0);
+});
+
+test('hover selects the nearest rendered line anywhere in the plot and interpolates its value',()=>{
+ const h=harness({realDraw:true});const canvasContext=new Proxy({}, {get:(o,k)=>o[k]??(()=>{})});h.ctx.devicePixelRatio=1;
+ h.el('chart').getBoundingClientRect=()=>({left:0,top:0,width:800,height:400});h.el('chart').getContext=()=>canvasContext;h.el('period').value='0';
+ h.run('all=[{id:1,node:1,ts:1800000000,temp:20,rh:40},{id:2,node:1,ts:1800000060,temp:22,rh:42},{id:3,node:2,ts:1800000000,temp:24,rh:50},{id:4,node:2,ts:1800000060,temp:24,rh:50}];draw()');
+ const point=h.run('({x:(chartHits[0].a.x+chartHits[0].b.x)/2,y:(chartHits[0].a.y+chartHits[0].b.y)/2})');
+ h.el('chart').onpointermove({clientX:point.x,clientY:point.y});
+ assert.equal(h.el('chartTooltip').hidden,false);assert.match(h.el('chartTooltip').innerHTML,/Sensor 1/);assert.match(h.el('chartTooltip').innerHTML,/21\.00 °C/);
+ h.el('chart').onpointerleave();assert.equal(h.el('chartTooltip').hidden,true);
 });
 
 test('archive metadata removes cached history and sensor cards and persists removal',async()=>{

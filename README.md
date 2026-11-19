@@ -61,7 +61,9 @@ LittleFS readings and NVS sequence counters can survive battery removal, but RTC
 
 ## Live dashboard
 
-The base serves the page and API at **http://temp.local/**. The dashboard displays latest sensor readings before historical backfill completes, fetches incrementally by record ID, updates progress per batch and polls every 30 seconds. Manual and automatic fetches share an overlap guard. Sensor cards use the same colours as their chart lines and legend.
+The base serves the page and API at **http://temp.local/**. The dashboard displays latest sensor readings before historical backfill completes, fetches incrementally by record ID, updates progress per batch and polls every 30 seconds. Manual and automatic fetches share an overlap guard. Sensor cards use the same colours as their chart lines and legend. Each sensor can have a location label of up to 48 bytes; labels are edited on the dashboard, stored in the base station's NVS, and survive reading resets.
+
+The chart timeline adapts to its visible range. The one-hour view labels clock-aligned ten-minute intervals, longer hourly ranges mark full hours and add quarter-hour labels only within the final hour, and multi-day ranges show weekday/date labels with six-hour (quarter-day) grid lines. Y-axis ticks use readable zero-anchored multiples (whole numbers, or 0.5 °C for narrow temperature ranges) while still allowing a non-zero visible minimum. Moving the pointer anywhere inside the plot selects the nearest sensor line and shows its interpolated value and time.
 
 The live view shows readings still retained on the base. Its IndexedDB cache is checked against the current dataset and retained-record boundary before display; archived readings disappear after the next successful refresh. If storage is unavailable, the page continues in visibly labelled memory-only mode. Old datasets remain separately stored when a base reset is detected; they are not mixed into the current live view.
 
@@ -102,6 +104,8 @@ This version uses dataset-checked `/api/archive/ack` (archive protocol 2). The s
 | GET | `/api/time` | NTP-backed Unix time; 503 until synchronized |
 | POST | `/api/readings` | Sensor CSV batches; returns `ACK <sequence>` |
 | GET | `/api/latest` | Cached latest retained reading per detected sensor |
+| GET | `/api/labels` | Sensor location labels stored on the base |
+| POST | `/api/labels?node=ID` | Set a sensor label, or clear it with an empty body |
 | GET | `/api/history?after=ID` | Incremental history; up to 100 records per page, also byte-limited |
 | POST | `/api/archive/ack?dataset=ID` | Remove the verified archived prefix; body is its highest record ID |
 | POST | `/api/reset` | Explicit destructive reset; requires `RESET ALL READINGS` |

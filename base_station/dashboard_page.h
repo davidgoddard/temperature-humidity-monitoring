@@ -16,8 +16,9 @@ button.danger{background:#fff;color:#a42332;border-color:#edb6bc}button.danger:h
 .controls{display:flex;align-items:center;column-gap:18px;row-gap:14px;flex-wrap:wrap}
 .controls label{display:inline-flex;align-items:center;gap:9px;white-space:nowrap}
 input{width:180px}#status{color:#4e647b}#count{color:#53677d;font-size:14px}
-.graph-area{margin-top:26px;padding-top:16px;border-top:1px solid #e9eef5}
+.graph-area{position:relative;margin-top:26px;padding-top:16px;border-top:1px solid #e9eef5}
 #chart{width:100%;height:400px;display:block}
+.chart-tooltip{position:absolute;z-index:2;pointer-events:none;min-width:175px;padding:9px 11px;border-radius:9px;background:rgba(25,38,54,.94);color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.2);font-size:12px;line-height:1.45;transform:translate(10px,-105%)}.chart-tooltip strong{display:block;font-size:13px}.chart-tooltip[hidden]{display:none}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(225px,1fr));gap:20px;margin:26px 0 8px}
 .card{cursor:pointer;text-align:left;font:inherit;color:inherit;padding:20px 22px 22px;border:1px solid var(--sensor-border);border-left:6px solid var(--sensor-color);border-radius:14px;background:var(--sensor-bg);min-height:168px;box-shadow:0 2px 5px rgba(0,0,0,.025)}
 .card[aria-pressed="true"]{outline:3px solid var(--sensor-color);outline-offset:2px}
@@ -28,12 +29,14 @@ input{width:180px}#status{color:#4e647b}#count{color:#53677d;font-size:14px}
 .card .sensor-rh{font-size:16px;margin-bottom:8px}.card .sensor-time{font-size:12px;color:#586d82}
 .legend{display:flex;gap:12px;flex-wrap:wrap;padding:13px 2px 3px}
 .legend-item{display:inline-flex;gap:9px;align-items:center;padding:7px 12px;border-radius:20px;border:1px solid var(--sensor-border);background:var(--sensor-bg);font-size:13px;font-weight:650;color:var(--sensor-color)}
+.label-list{display:grid;gap:10px;margin-top:16px}.label-row{display:grid;grid-template-columns:minmax(90px,130px) minmax(160px,360px) auto;gap:10px;align-items:center}.label-row strong{color:#43576d}.label-row input{width:100%}.label-status{font-size:13px;color:#596a7f}
 small{color:#65778b}
-@media(max-width:640px){body{padding:17px 12px 36px}section{padding:18px 15px;margin:17px 0}.cards{grid-template-columns:1fr;gap:13px;margin-top:20px}.card{min-height:0}#chart{height:340px}.controls{gap:12px}}
+@media(max-width:640px){body{padding:17px 12px 36px}section{padding:18px 15px;margin:17px 0}.cards{grid-template-columns:1fr;gap:13px;margin-top:20px}.card{min-height:0}#chart{height:340px}.controls{gap:12px}.label-row{grid-template-columns:1fr auto}.label-row strong{grid-column:1/-1}}
 </style></head>
 <body><h1>Wi-Fi Temperature Dashboard</h1><p>Shows readings still retained on the base station. Use the Node archive app to save and browse long-term history.</p>
 <section><div class="controls"><label>Base URL <input id="base" value="http://temp.local"></label><button class="primary" id="refresh">Fetch readings</button><span id="status" role="status" aria-live="polite">Not connected</span></div><p><small>Dashboard and API are served by the base at http://temp.local. Refresh retrieves available measurements over Wi-Fi.</small></p></section>
-<section><div class="controls"><label>Show <select id="metric"><option value="temp">Temperature (°C)</option><option value="rh">Humidity (%)</option></select></label><label>Period <select id="period"><option value="1">1 hour</option><option value="6" selected>6 hours</option><option value="24">24 hours</option><option value="168">7 days</option><option value="720">30 days</option><option value="0">All</option></select></label><label>Overdue after (seconds) <input id="overdue" type="number" min="120" value="360"></label><span id="count"></span></div><div id="cards" class="cards"></div><div class="graph-area"><canvas id="chart"></canvas><div id="legend" class="legend"></div></div></section>
+<section><div class="controls"><label>Show <select id="metric"><option value="temp">Temperature (°C)</option><option value="rh">Humidity (%)</option></select></label><label>Period <select id="period"><option value="1">1 hour</option><option value="6" selected>6 hours</option><option value="24">24 hours</option><option value="168">7 days</option><option value="720">30 days</option><option value="0">All</option></select></label><label>Overdue after (seconds) <input id="overdue" type="number" min="120" value="360"></label><span id="count"></span></div><div id="cards" class="cards"></div><div class="graph-area"><canvas id="chart"></canvas><div id="chartTooltip" class="chart-tooltip" hidden></div><div id="legend" class="legend"></div></div></section>
+<section><h3>Sensor locations</h3><p>Add a location or other label for each sensor. Labels are stored on the base station and appear on every browser.</p><div id="labelList" class="label-list"></div><span id="labelStatus" class="label-status" role="status" aria-live="polite"></span></section>
 <section><h3>Archive and export</h3><p>Choose an archive folder in Chrome or Edge, then save the outstanding readings. The base deletes acknowledged readings <strong>only after</strong> the browser has written the archive file successfully.</p><div class="controls"><button id="folder">Choose archive folder</button><button id="archive" class="primary">Save snapshot + acknowledge</button><button id="download">Download CSV (no deletion)</button><span id="archiveStatus"></span></div><p><small>Important: direct folder writing is unavailable at ordinary http://temp.local because it is not a secure browser context. Use Download CSV and choose its destination in the browser, or serve this file from localhost/HTTPS to enable Choose archive folder and automatic base acknowledgement.</small></p></section>
 <section><h3>Reset base station readings</h3><p>This permanently deletes all readings held by the base station and clears this browser's stored sensor history. Previously downloaded CSV archives are not deleted. Sensors will continue uploading new readings.</p><div class="controls"><button id="reset" class="danger">Reset all readings…</button><span id="resetStatus"></span></div></section>
 <script>
@@ -41,13 +44,15 @@ small{color:#65778b}
 const $=s=>document.getElementById(s);const palette=['#2563eb','#db2777','#0f766e','#9a6700','#7c3aed','#b45309','#0e7490','#be185d'];
 const sensorColor=id=>palette[((Number(id)-1)%palette.length+palette.length)%palette.length];
 const sensorStyle=id=>{let color=sensorColor(id);return `--sensor-color:${color};--sensor-bg:${color}0d;--sensor-border:${color}44;`;};
-let db, all=[], latest=[], folder=null, busy=false, initialized=false;
+let db, all=[], latest=[], folder=null, busy=false, initialized=false, labels=new Map(), labelRenderKey='', chartHits=[], chartBounds=null;
 let persistedAfter=0, sessionAfter=0, activeDataset=null, legacyDataset=null, storageWarning='', datasetNotice='';
 const memoryDatasets=new Map();
 function stored(key){try{return localStorage.getItem(key);}catch{return null;}}
 function remember(key,value){try{localStorage.setItem(key,value);}catch{}}
 function memoryOnly(error){if(db)db.close();db=null;storageWarning='Readings are not stored persistently: '+(error?.message||error);}
 const maxId=rows=>rows.reduce((n,r)=>Math.max(n,r.id),0);
+const escapeHtml=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const sensorName=id=>labels.get(id)||'Sensor '+id;
 
 const datasetKey='esp-sensor-dataset-id';
 const archiveKey=suffix=>'esp-archive-'+activeDataset+'-'+suffix;
@@ -142,12 +147,24 @@ const getArchId=()=>Number(localStorage.getItem(archiveKey('last-id'))||0);
 async function request(path){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);try{
  const response=await fetch(url(path),{cache:'no-store',signal:controller.signal});if(!response.ok)throw Error('HTTP '+response.status);return await response.json();
  }catch(e){if(e.name==='AbortError')throw Error('Request timed out');throw e;}finally{clearTimeout(timer);}}
+async function loadLabels(){
+ const json=await request('/api/labels');if(!Array.isArray(json.labels))throw Error('Invalid labels response');
+ const next=new Map();for(const item of json.labels){if(!Array.isArray(item)||item.length!==2||!Number.isInteger(item[0])||item[0]<1||item[0]>255||typeof item[1]!=='string')throw Error('Invalid sensor label');if(item[1])next.set(item[0],item[1]);}
+ labels=next;draw();
+}
+async function saveLabel(id,input,button){
+ button.disabled=true;$('labelStatus').textContent='Saving Sensor '+id+'…';
+ try{const response=await fetch(url('/api/labels?node='+id),{method:'POST',headers:{'Content-Type':'text/plain'},body:input.value});if(!response.ok)throw Error('HTTP '+response.status+': '+await response.text());const result=await response.json();if(result.label)labels.set(id,result.label);else labels.delete(id);input.value=result.label;$('labelStatus').textContent='Sensor '+id+' label saved';draw();}
+ catch(e){$('labelStatus').textContent='Could not save label: '+e.message;}
+ finally{button.disabled=false;}
+}
 function decodeRows(json){if(json.dataset&&json.dataset!==activeDataset)throw Error('Dataset changed during download; fetch again');if(!Array.isArray(json.rows))throw Error('Invalid readings response');return json.rows.map(r=>{
  if(!Array.isArray(r)||r.length!==6||!r.every(v=>typeof v==='number'&&Number.isFinite(v))||!Number.isSafeInteger(r[0])||r[0]<=0||!Number.isInteger(r[1])||r[1]<1||r[1]>255)throw Error('Invalid sensor reading');
  return {id:r[0],node:r[1],seq:r[2],ts:r[3],temp:r[4],rh:r[5]};});}
 async function fetchAll(){if(busy||!initialized)return false;busy=true;$('refresh').disabled=true;$('base').disabled=true;let total=0;
 try{
 message('Connecting');await checkDataset();
+try{await loadLabels();}catch(e){$('labelStatus').textContent='Labels unavailable: '+e.message;}
 // Latest readings are deliberately separate from the history cursor: persisting
 // them here would skip the historical records between the cache and the latest.
 try{latest=decodeRows(await request('/api/latest'));draw();message('Connected — '+latest.length+' sensors reporting');}
@@ -206,18 +223,63 @@ await checkDataset();$('archiveStatus').textContent='Saved '+name+' ('+pending.l
 let selectedSensor=null;
 function toggleSensor(id){selectedSensor=selectedSensor===id?null:id;draw();}
 $('cards').onclick=event=>{const card=event.target.closest('[data-sensor]');if(card)toggleSensor(Number(card.dataset.sensor));};
+$('labelList').onclick=event=>{const button=event.target.closest('[data-save-label]');if(button){const id=Number(button.dataset.saveLabel),input=$('label-'+id);saveLabel(id,input,button);}};
+$('labelList').onkeydown=event=>{if(event.key==='Enter'&&event.target.matches('[data-label-input]'))event.target.nextElementSibling.click();};
+
+function drawLabelEditor(sensors){
+ const key=sensors.map(([id])=>id+':'+(labels.get(id)||'')).join('|');if(key===labelRenderKey)return;labelRenderKey=key;
+ $('labelList').innerHTML=sensors.length?sensors.map(([id])=>`<div class="label-row"><strong>Sensor ${id}</strong><input id="label-${id}" data-label-input maxlength="48" value="${escapeHtml(labels.get(id)||'')}" placeholder="e.g. Greenhouse" aria-label="Label for Sensor ${id}"><button type="button" data-save-label="${id}">Save</button></div>`).join(''):'<small>Sensor label controls will appear after the first reading arrives.</small>';
+}
+function drawTimeAxis(c,X,minX,maxX,T,ch,h){
+ const span=maxX-minX,multiDay=span>=36*3600;
+ c.textAlign='center';c.font='11px system-ui';
+ if(span<=90*60){
+  let tick=new Date(minX*1000);tick.setSeconds(0,0);tick.setMinutes(Math.floor(tick.getMinutes()/10)*10);if(tick.getTime()/1000<minX)tick.setMinutes(tick.getMinutes()+10);
+  for(;tick.getTime()/1000<=maxX;tick.setMinutes(tick.getMinutes()+10)){const ts=tick.getTime()/1000,x=X(ts);c.strokeStyle=tick.getMinutes()===0?'#d0dbe7':'#e7edf4';c.beginPath();c.moveTo(x,T);c.lineTo(x,T+ch);c.stroke();c.fillStyle='#43576d';c.fillText(tick.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),x,h-10);}
+ }else if(multiDay){
+  let tick=new Date(minX*1000);tick.setHours(0,0,0,0);
+  while(tick.getTime()/1000<minX)tick.setHours(tick.getHours()+6);
+  for(;tick.getTime()/1000<=maxX;tick.setHours(tick.getHours()+6)){
+   const ts=tick.getTime()/1000,midnight=tick.getHours()===0,x=X(ts);c.strokeStyle=midnight?'#c5d1df':'#e8edf3';c.beginPath();c.moveTo(x,T);c.lineTo(x,T+ch);c.stroke();
+   if(midnight){c.fillStyle='#43576d';c.fillText(tick.toLocaleDateString([],{weekday:'short'}),x,h-25);c.fillText(tick.toLocaleDateString([],{day:'2-digit',month:'short'}),x,h-10);}
+  }
+ }else{
+  let tick=new Date(minX*1000);tick.setMinutes(0,0,0);if(tick.getTime()/1000<minX)tick.setHours(tick.getHours()+1);
+  for(;tick.getTime()/1000<=maxX;tick.setHours(tick.getHours()+1)){const ts=tick.getTime()/1000,x=X(ts);c.strokeStyle='#d9e2ec';c.beginPath();c.moveTo(x,T);c.lineTo(x,T+ch);c.stroke();c.fillStyle='#43576d';c.fillText(tick.toLocaleTimeString([],{hour:'2-digit'}),x,h-10);}
+  const lastHour=new Date(maxX*1000);lastHour.setMinutes(0,0,0);
+  for(let minute=15;minute<60;minute+=15){const d=new Date(lastHour);d.setMinutes(minute);const ts=d.getTime()/1000;if(ts<=minX||ts>maxX)continue;const x=X(ts);c.strokeStyle='#edf1f6';c.beginPath();c.moveTo(x,T);c.lineTo(x,T+ch);c.stroke();c.fillStyle='#718096';c.fillText(':'+String(minute).padStart(2,'0'),x,h-10);}
+ }
+}
+function niceScale(min,max,metric){
+ const minimum=metric==='temp'?.5:1,span=Math.max(0,max-min),raw=Math.max(minimum,span/5),power=10**Math.floor(Math.log10(raw)),fraction=raw/power;
+ let step=(fraction<=1?1:fraction<=2?2:fraction<=5?5:10)*power;step=Math.max(minimum,step);
+ let low=Math.floor(min/step)*step,high=Math.ceil(max/step)*step;
+ if(Math.round((high-low)/step)<4){const middle=(min+max)/2;low=Math.floor((middle-2*step)/step)*step;high=low+4*step;if(low>min){low-=step;high-=step;}if(high<max){low+=step;high+=step;}}
+ return {low,high,step,decimals:step<1?1:0};
+}
+function chartHover(event){
+ const tip=$('chartTooltip'),canvas=$('chart'),rect=canvas.getBoundingClientRect();
+ const x=Number.isFinite(event.clientX)?event.clientX-rect.left:event.offsetX,y=Number.isFinite(event.clientY)?event.clientY-rect.top:event.offsetY;
+ if(!chartBounds||x<chartBounds.left||x>chartBounds.right||y<chartBounds.top||y>chartBounds.bottom||!chartHits.length){tip.hidden=true;return;}
+ let nearest=null;
+ for(const segment of chartHits){const dx=segment.b.x-segment.a.x,dy=segment.b.y-segment.a.y,length=dx*dx+dy*dy;const t=length?Math.max(0,Math.min(1,((x-segment.a.x)*dx+(y-segment.a.y)*dy)/length)):0;const px=segment.a.x+t*dx,py=segment.a.y+t*dy,distance=(x-px)**2+(y-py)**2;if(!nearest||distance<nearest.distance)nearest={segment,t,px,py,distance};}
+ const {segment,t,px,py}=nearest,value=segment.a.value+t*(segment.b.value-segment.a.value),ts=segment.a.ts+t*(segment.b.ts-segment.a.ts),metric=$('metric').value,unit=metric==='temp'?' °C':' % RH';
+ tip.innerHTML=`<strong>${escapeHtml(sensorName(segment.node))}</strong>${value.toFixed(metric==='temp'?2:1)}${unit}<br>${new Date(ts*1000).toLocaleString()}`;tip.style.left=px+'px';tip.style.top=(py+16)+'px';tip.hidden=false;
+}
+$('chart').onpointermove=chartHover;$('chart').onpointerleave=()=>{$('chartTooltip').hidden=true;};
 
 function draw(){const sel=$('metric').value,hours=+$('period').value,cutoff=hours?Date.now()/1000-hours*3600:0;let rows=all.filter(r=>r.ts>cutoff&&r.ts>0&&(selectedSensor===null||r.node===selectedSensor));$('count').textContent=rows.length+' readings in displayed period';
-const last=new Map();for(const r of [...all,...latest])if(!last.has(r.node)||last.get(r.node).id<r.id)last.set(r.node,r);$('cards').innerHTML=[...last].sort((a,b)=>a[0]-b[0]).map(([id,r])=>`<button type="button" class="card" data-sensor="${id}" aria-pressed="${selectedSensor===id}" title="${selectedSensor===id?'Show all sensors':'Show only Sensor '+id}" style="${sensorStyle(id)}"><div class="sensor-name"><span class="sensor-dot"></span>Sensor ${id}</div><div class="sensor-number">${r.temp.toFixed(2)} °C</div><div class="sensor-rh">${r.rh.toFixed(1)} % RH</div><div class="sensor-time">${r.ts>0?new Date(r.ts*1000).toLocaleString():'Measurement time unknown'}<br>${r.ts>0?Math.max(0,Math.floor(Date.now()/1000-r.ts))+' seconds since measurement — '+(Date.now()/1000-r.ts>Math.max(120,+$('overdue').value||360)?'Overdue':'Recently seen'):'Age unknown'}</div></button>`).join('');
+const last=new Map();for(const r of [...all,...latest])if(!last.has(r.node)||last.get(r.node).id<r.id)last.set(r.node,r);const sensors=[...last].sort((a,b)=>a[0]-b[0]);$('cards').innerHTML=sensors.map(([id,r])=>`<button type="button" class="card" data-sensor="${id}" aria-pressed="${selectedSensor===id}" title="${selectedSensor===id?'Show all sensors':'Show only '+escapeHtml(sensorName(id))}" style="${sensorStyle(id)}"><div class="sensor-name"><span class="sensor-dot"></span>${escapeHtml(sensorName(id))}</div><div class="sensor-number">${r.temp.toFixed(2)} °C</div><div class="sensor-rh">${r.rh.toFixed(1)} % RH</div><div class="sensor-time">Sensor ${id} · ${r.ts>0?new Date(r.ts*1000).toLocaleString():'Measurement time unknown'}<br>${r.ts>0?Math.max(0,Math.floor(Date.now()/1000-r.ts))+' seconds since measurement — '+(Date.now()/1000-r.ts>Math.max(120,+$('overdue').value||360)?'Overdue':'Recently seen'):'Age unknown'}</div></button>`).join('');
+drawLabelEditor(sensors);
 let canvas=$('chart'),rect=canvas.getBoundingClientRect(),w=Math.max(320,rect.width),h=Math.max(300,rect.height),dpr=devicePixelRatio||1;canvas.width=w*dpr;canvas.height=h*dpr;let c=canvas.getContext('2d');c.scale(dpr,dpr);c.clearRect(0,0,w,h);let L=65,R=17,T=22,B=40,cw=w-L-R,ch=h-T-B;
-if(!rows.length){$('legend').innerHTML='';c.fillStyle='#708090';c.font='14px system-ui';c.fillText('No readings for this period',L+25,T+80);return;}
-let low=rows.reduce((v,r)=>Math.min(v,r[sel]),Infinity),high=rows.reduce((v,r)=>Math.max(v,r[sel]),-Infinity),minSpan=sel==='temp'?.2:2,range=Math.max(minSpan,high-low);low=(low+high-range)/2;high=low+range;low-=range*.10;high+=range*.10;
+chartHits=[];chartBounds={left:L,right:w-R,top:T,bottom:T+ch};$('chartTooltip').hidden=true;if(!rows.length){$('legend').innerHTML='';c.fillStyle='#708090';c.font='14px system-ui';c.fillText('No readings for this period',L+25,T+80);return;}
+let dataLow=rows.reduce((v,r)=>Math.min(v,r[sel]),Infinity),dataHigh=rows.reduce((v,r)=>Math.max(v,r[sel]),-Infinity),scale=niceScale(dataLow,dataHigh,sel),low=scale.low,high=scale.high;
 let minX=rows.reduce((v,r)=>Math.min(v,r.ts),Infinity),maxX=rows.reduce((v,r)=>Math.max(v,r.ts),-Infinity);if(maxX-minX<60){minX-=30;maxX+=30;}if(hours){maxX=Math.max(maxX,Date.now()/1000);minX=Math.max(minX,maxX-hours*3600);}
 const X=x=>L+(x-minX)/(maxX-minX)*cw,Y=y=>T+(high-y)/(high-low)*ch;
-c.font='12px system-ui';c.textAlign='right';c.fillStyle='#53667b';c.strokeStyle='#e3e9f1';for(let i=0;i<=5;i++){let y=T+i*ch/5, val=high-i*(high-low)/5;c.beginPath();c.moveTo(L,y);c.lineTo(w-R,y);c.stroke();c.fillText(val.toFixed((high-low)<.6?2:1),L-8,y+4);}
-c.textAlign='center';for(let i=0;i<=5;i++){let ts=minX+i*(maxX-minX)/5,label=new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});c.fillText(label,X(ts),h-12);}
-let ids=[...new Set(rows.map(r=>r.node))].sort((a,b)=>a-b);for(let id of ids){let pts=rows.filter(r=>r.node===id).sort((a,b)=>a.ts-b.ts);c.strokeStyle=sensorColor(id);c.lineWidth=2;c.beginPath();pts.forEach((r,i)=>i?c.lineTo(X(r.ts),Y(r[sel])):c.moveTo(X(r.ts),Y(r[sel])));c.stroke();pts.forEach(r=>{c.beginPath();c.arc(X(r.ts),Y(r[sel]),2.2,0,Math.PI*2);c.fillStyle=c.strokeStyle;c.fill();});}
-$('legend').innerHTML=ids.map(id=>`<span class="legend-item" style="${sensorStyle(id)}"><span class="legend-dot"></span>Sensor ${id}</span>`).join('');
+c.font='12px system-ui';c.textAlign='right';c.fillStyle='#53667b';c.strokeStyle='#e3e9f1';const tickCount=Math.round((high-low)/scale.step);for(let i=0;i<=tickCount;i++){let val=high-i*scale.step,y=Y(val);if(Math.abs(val)<scale.step/1000)val=0;c.beginPath();c.moveTo(L,y);c.lineTo(w-R,y);c.stroke();c.fillText(val.toFixed(scale.decimals),L-8,y+4);}
+drawTimeAxis(c,X,minX,maxX,T,ch,h);
+let ids=[...new Set(rows.map(r=>r.node))].sort((a,b)=>a-b);for(let id of ids){let pts=rows.filter(r=>r.node===id).sort((a,b)=>a.ts-b.ts),screen=pts.map(r=>({x:X(r.ts),y:Y(r[sel]),ts:r.ts,value:r[sel]}));c.strokeStyle=sensorColor(id);c.lineWidth=2;c.beginPath();screen.forEach((p,i)=>i?c.lineTo(p.x,p.y):c.moveTo(p.x,p.y));c.stroke();screen.forEach(p=>{c.beginPath();c.arc(p.x,p.y,2.2,0,Math.PI*2);c.fillStyle=c.strokeStyle;c.fill();});if(screen.length===1)chartHits.push({node:id,a:screen[0],b:screen[0]});else for(let i=1;i<screen.length;i++)chartHits.push({node:id,a:screen[i-1],b:screen[i]});}
+$('legend').innerHTML=ids.map(id=>`<span class="legend-item" style="${sensorStyle(id)}"><span class="legend-dot"></span>${escapeHtml(sensorName(id))}</span>`).join('');
 }
 $('reset').onclick=resetAll;$('refresh').onclick=fetchAll;$('folder').onclick=chooseFolder;$('archive').onclick=archive;$('download').onclick=()=>download(new Blob([csv(all)],{type:'text/csv'}),'sensors_full_'+today()+'.csv');$('metric').onchange=draw;$('period').onchange=draw;$('overdue').onchange=draw;window.onresize=draw;
 async function initialize(){
